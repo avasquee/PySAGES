@@ -63,13 +63,15 @@ class FFS(SamplingMethod):
     def run(
         self,
         context_generator: Callable,
-        timesteps: int,
+        sampling_steps_win: int,
         dt: float,
         win_i: float,
         win_l: float,
         Nw: int,
-        sampling_steps_basin: int,
         Nmax_replicas: int,
+        basin_sampling: bool = True,
+        sampling_steps_basin: int = None,
+        ini_snaps: list = None,
         verbose: bool = False,
         callback: Optional[Callable] = None,
         context_args: Mapping = dict(),
@@ -129,7 +131,14 @@ class FFS(SamplingMethod):
             xi = sampler.state.xi.block_until_ready()
             windows = np.linspace(win_i, win_l, num=Nw)
 
-            is_configuration_good = check_input(windows, xi, verbose=verbose)
+            if win_i < win_l:
+                increase = True
+            elif win_i > win_l:
+                increase = False
+            else:
+                raise ValueError("State A equal to state B")
+
+            is_configuration_good = check_input(windows, xi, increase, verbose=verbose)
             if not is_configuration_good:
                 raise ValueError("Bad initial configuration")
 
@@ -141,37 +150,72 @@ class FFS(SamplingMethod):
 
             # We initially sample from basin A
             # TODO: bundle the arguments into data structures
-            ini_snapshots = basin_sampling(
+            if basin_sampling:
+                ini_snapshots, basin_steps = basin_sampling(
+                    Nmax_replicas,
+                    sampling_steps_basin,
+                    windows,
+                    run,
+                    sampler,
+                    reference_snapshot,
+                    helpers,
+                    cv,
+                    increase,
+                )
+                if write_snaps:
+                    write_snapshots('Basin', ini_snapshots)   
+            else:
+                if ini_snaps is None: 
+                    raise ValueError("Provide initial snapshots or set Asampling to True")
+                ini_snapshots = ini_snaps
+                if len(ini_snapshots) != Nmax_replicas:
+                    raise ValueError("Wrong number of initial configurations")
+                basin_steps = 0
+            
+            # Calculate initial flow
+            phi_a, snaps_0, flow_steps = initial_flow(
                 Nmax_replicas,
-                sampling_steps_basin,
+                dt,
+                sampling_steps_win,
                 windows,
+                ini_snapshots,
                 run,
                 sampler,
-                reference_snapshot,
                 helpers,
                 cv,
-            )
-
-            # Calculate initial flow
-            phi_a, snaps_0 = initial_flow(
-                Nmax_replicas, dt, windows, ini_snapshots, run, sampler, helpers, cv
+                increase,
+                basin_steps,
             )
 
             write_to_file(phi_a)
             hist = np.zeros(len(windows))
             hist = hist.at[0].set(phi_a)
 
+            if write_snaps:
+                write_snapshots('initial flow', snaps_0)
+
             # Calculate conditional probability for each window
             for k in range(1, len(windows)):
                 if k == 1:
                     old_snaps = snaps_0
                 prob, w1_snapshots = running_window(
-                    windows, k, old_snaps, run, sampler, helpers, cv
+                    windows,
+                    k,
+                    sampling_steps_win,
+                    old_snaps,
+                    run,
+                    sampler,
+                    helpers,
+                    cv,
+                    increase,
+                    flow_steps
                 )
                 write_to_file(prob)
                 hist = hist.at[k].set(prob)
                 old_snaps = increase_snaps(w1_snapshots, snaps_0)
                 print(f"size of snapshots: {len(old_snaps)}\n")
+                if write_snaps:
+                    write_snapshots('Window_' + str(k), w1_snapshots)
 
             K_t = np.prod(hist)
             write_to_file("# Flux Constant")
@@ -221,7 +265,17 @@ def write_to_file(value):
     with open("ffs_results.dat", "a+") as f:
         f.write(str(value) + "\n")
 
+#to do - write window, initial step and final step, success or fail
+def write_trajectory_info(id, stage, step_ini, step_end, status):
+    with open("trajectories.dat", "a+") as f:
+        f.write(str(id) + "\t" + stage + "\t" + str(step_ini) + "\t" + str(step_end) + "\t" + status + "\n")
 
+#to do - write window, initial step and final step, success or fail
+def write_snapshots(stage, id, snapshots):
+    file = stage + '.npy'
+    with open(file, "wb") as f:
+        np.save(f, snapshots)
+        
 # Since snapshots are depleted each window, this function restores the list to
 # its initial values. This only works with stochastic integrators like BD or
 # Langevin, for other, velocity resampling is needed
@@ -233,11 +287,14 @@ def increase_snaps(windows, initial_w):
     return windows
 
 
-def check_input(grid, xi, verbose=False):
+def check_input(grid, xi, increase, verbose=False):
     """
     Verify whether the initial configuration is a good one.
     """
-    is_good = xi < grid[0]
+    if increase:
+        is_good = xi < grid[0]
+    else:
+        is_good = xi > grid[0]
 
     if is_good:
         print("Good initial configuration\n")
@@ -249,7 +306,7 @@ def check_input(grid, xi, verbose=False):
 
 
 def basin_sampling(
-    max_num_snapshots, sampling_time, grid, run, sampler, reference_snapshot, helpers, cv
+    max_num_snapshots, sampling_time, grid, run, sampler, reference_snapshot, helpers, cv, increase
 ):
     """
     Sampling of basing configurations for initial flux calculations.
@@ -257,29 +314,44 @@ def basin_sampling(
     basin_snapshots = []
     win_A = grid[0]
     xi = sampler.state.xi.block_until_ready()
+    total_steps = 0
 
     print("Starting basin sampling\n")
     while len(basin_snapshots) < int(max_num_snapshots):
         run(sampling_time)
+        total += sampling_time
         xi = sampler.state.xi.block_until_ready()
 
-        if np.all(xi < win_A):
-            snap = copy(sampler.snapshot)
-            basin_snapshots.append(snap)
-            print("Storing basing configuration with cv value:\n")
-            print(xi)
+        if increase:
+            if np.all(xi < win_A):
+                snap = copy(sampler.snapshot)
+                basin_snapshots.append(snap)
+                print("Storing basing configuration with cv value:\n")
+                print(xi)
+            else:
+                helpers.restore(sampler.snapshot, reference_snapshot)
+                xi, _ = cv(helpers.query(sampler.snapshot))
+                print("Restoring basing configuration since system left basin with cv value:\n")
+                print(xi)
         else:
-            helpers.restore(sampler.snapshot, reference_snapshot)
-            xi, _ = cv(helpers.query(sampler.snapshot))
-            print("Restoring basing configuration since system left basin with cv value:\n")
-            print(xi)
+            if np.all(xi > win_A):
+                snap = copy(sampler.snapshot)
+                basin_snapshots.append(snap)
+                print("Storing basing configuration with cv value:\n")
+                print(xi)
+            else:
+                helpers.restore(sampler.snapshot, reference_snapshot)
+                xi, _ = cv(helpers.query(sampler.snapshot))
+                print("Restoring basing configuration since system left basin with cv value:\n")
+                print(xi)
 
     print(f"Finish sampling basin with {max_num_snapshots} snapshots\n")
+    if write_traj:
+        write_trajectory_info(0, 'Basin', 1, total_steps, 'initial sampling')
+    return basin_snapshots, total_steps
 
-    return basin_snapshots
 
-
-def initial_flow(Num_window0, timestep, grid, initial_snapshots, run, sampler, helpers, cv):
+def initial_flow(Num_window0, timestep, freq, grid, initial_snapshots, run, sampler, helpers, cv, increase, basin_steps):
     """
     Selects snapshots from list generated with `basin_sampling`.
     """
@@ -288,6 +360,8 @@ def initial_flow(Num_window0, timestep, grid, initial_snapshots, run, sampler, h
     time_count = 0.0
     window0_snaps = []
     win_A = grid[0]
+    initial_step = basin_steps
+    steps_count = basin_steps
 
     for i in range(0, Num_window0):
         print(f"Initial stored configuration: {i}\n")
@@ -298,32 +372,53 @@ def initial_flow(Num_window0, timestep, grid, initial_snapshots, run, sampler, h
         has_reached_A = False
         while not has_reached_A:
             # TODO: make the number of timesteps below a parameter of the method.
-            run(1)
-            time_count += timestep
+            run(freq)
+            time_count += freq * timestep
+            steps_count += freq
             xi = sampler.state.xi.block_until_ready()
+            
+            if increase:
+                if np.all(xi >= win_A) and np.all(xi < grid[1]):
+                    success += 1
+                    has_reached_A = True
+                    
+                    if len(window0_snaps) <= Num_window0:
+                        snap = copy(sampler.snapshot)
+                        window0_snaps.append(snap)
 
-            if np.all(xi >= win_A) and np.all(xi < grid[1]):
-                success += 1
-                has_reached_A = True
+                    write_trajectory_info(i + 1, 'initial_flow', initial_step, steps_count, 'success')
+                    initial_step = steps_count
 
-                if len(window0_snaps) <= Num_window0:
-                    snap = copy(sampler.snapshot)
-                    window0_snaps.append(snap)
+                    break
+            else:
+                if np.all(xi <= win_A) and np.all(xi > grid[1]):
+                    success += 1
+                    has_reached_A = True
 
-                break
+                    if len(window0_snaps) <= Num_window0:
+                        snap = copy(sampler.snapshot)
+                        window0_snaps.append(snap)
+                    
+                    write_trajectory_info(i + 1, 'initial_flow', initial_step, steps_count, 'success')
+                    initial_step = steps_count
+
+                    break
 
     print(f"Finish Initial Flow with {success} succeses over {time_count} time\n")
     phi_a = float(success) / (time_count)
 
-    return phi_a, window0_snaps
+    return phi_a, window0_snaps, steps_count
 
 
-def running_window(grid, step, old_snapshots, run, sampler, helpers, cv):
+def running_window(grid, step, freq, old_snapshots, run, sampler, helpers, cv, increase, flow_steps):
     success = 0
     new_snapshots = []
     win_A = grid[0]
     win_value = grid[int(step)]
+    stage = 'Window_' + str(win_value)
     has_conf_stored = False
+    initial_step = flow_steps
+    steps_count = flow_steps
 
     for i in range(0, len(old_snapshots)):
         helpers.restore(sampler.snapshot, old_snapshots[i])
@@ -335,18 +430,24 @@ def running_window(grid, step, old_snapshots, run, sampler, helpers, cv):
         # this can be probably be improved
         running = True
         while running:
-            run(1)
+            run(freq)
+            steps_count += freq
             xi = sampler.state.xi.block_until_ready()
 
-            if np.all(xi < win_A):
-                running = False
-            elif np.all(xi >= win_value):
-                snap = copy(sampler.snapshot)
-                new_snapshots.append(snap)
-                success += 1
-                running = False
-                if not has_conf_stored:
-                    has_conf_stored = True
+            if increase:
+                if np.all(xi < win_A):
+                    running = False
+                    write_trajectory_info(i + 1, stage, initial_step, steps_count, 'fail')
+                    initial_step = steps_count
+                elif np.all(xi >= win_value):
+                    snap = copy(sampler.snapshot)
+                    new_snapshots.append(snap)
+                    success += 1
+                    running = False
+                    if not has_conf_stored:
+                        has_conf_stored = True
+                    write_trajectory_info(i + 1, stage, initial_step, steps_count, 'success')
+                    initial_step = steps_count
 
     if success == 0:
         warn(f"Unable to estimate probability, exiting early at window {step}\n")
