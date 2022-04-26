@@ -163,7 +163,7 @@ class FFS(SamplingMethod):
                     helpers,
                     cv,
                     increase,
-                    write_traj,
+                    write_traj
                 )
                 if write_snaps:
                     write_snapshots('Basin', ini_snapshots)   
@@ -188,7 +188,7 @@ class FFS(SamplingMethod):
                 cv,
                 increase,
                 basin_steps,
-                write_traj,
+                write_traj
             )
 
             write_to_file(phi_a)
@@ -213,7 +213,7 @@ class FFS(SamplingMethod):
                     cv,
                     increase,
                     flow_steps,
-                    write_traj,
+                    write_traj
                 )
                 write_to_file(prob)
                 hist = hist.at[k].set(prob)
