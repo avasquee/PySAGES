@@ -69,7 +69,7 @@ class FFS(SamplingMethod):
         win_l: float,
         Nw: int,
         Nmax_replicas: int,
-        basin_sampling: bool = True,
+        do_basin: bool = True,
         sampling_steps_basin: int = None,
         ini_snaps: list = None,
         write_snaps: bool = True,
@@ -152,7 +152,7 @@ class FFS(SamplingMethod):
 
             # We initially sample from basin A
             # TODO: bundle the arguments into data structures
-            if basin_sampling:
+            if do_basin:
                 ini_snapshots, basin_steps = basin_sampling(
                     Nmax_replicas,
                     sampling_steps_basin,
@@ -163,7 +163,7 @@ class FFS(SamplingMethod):
                     helpers,
                     cv,
                     increase,
-                    write_traj,
+                    write_traj
                 )
                 if write_snaps:
                     write_snapshots('Basin', ini_snapshots)   
@@ -188,7 +188,7 @@ class FFS(SamplingMethod):
                 cv,
                 increase,
                 basin_steps,
-                write_traj,
+                write_traj
             )
 
             write_to_file(phi_a)
@@ -213,7 +213,7 @@ class FFS(SamplingMethod):
                     cv,
                     increase,
                     flow_steps,
-                    write_traj,
+                    write_traj
                 )
                 write_to_file(prob)
                 hist = hist.at[k].set(prob)
@@ -270,12 +270,12 @@ def write_to_file(value):
     with open("ffs_results.dat", "a+") as f:
         f.write(str(value) + "\n")
 
-#to do - write window, initial step and final step, success or fail
+# Write window, initial step and final step, success or fail
 def write_trajectory_info(id, stage, step_ini, step_end, status):
     with open("trajectories.dat", "a+") as f:
         f.write(str(id) + "\t" + stage + "\t" + str(step_ini) + "\t" + str(step_end) + "\t" + status + "\n")
 
-#to do - write window, initial step and final step, success or fail
+# Write window, initial step and final step, success or fail
 def write_snapshots(stage, id, snapshots):
     file = stage + '.npy'
     with open(file, "wb") as f:
