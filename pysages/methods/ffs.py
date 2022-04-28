@@ -271,12 +271,12 @@ def write_to_file(value):
         f.write(str(value) + "\n")
 
 # Write window, initial step and final step, success or fail
-def write_trajectory_info(id, stage, step_ini, step_end, status):
+def write_trajectory_info(stage, step_ini, step_end, xi, status):
     with open("trajectories.dat", "a+") as f:
-        f.write(str(id) + "\t" + stage + "\t" + str(step_ini) + "\t" + str(step_end) + "\t" + status + "\n")
+        f.write(stage + "\t" + str(step_ini) + "\t" + str(step_end) + "\t" + str(xi) + "\t" + status + "\n")
 
 # Write window, initial step and final step, success or fail
-def write_snapshots(stage, id, snapshots):
+def write_snapshots(stage, snapshots):
     file = stage + '.npy'
     with open(file, "wb") as f:
         np.save(f, snapshots)
@@ -320,6 +320,7 @@ def basin_sampling(
     win_A = grid[0]
     xi = sampler.state.xi.block_until_ready()
     total_steps = 0
+    ini_step = 1
 
     print("Starting basin sampling\n")
     while len(basin_snapshots) < int(max_num_snapshots):
@@ -333,26 +334,37 @@ def basin_sampling(
                 basin_snapshots.append(snap)
                 print("Storing basing configuration with cv value:\n")
                 print(xi)
+                if write_traj:
+                    write_trajectory_info('Basin', ini_step, total_steps, xi, 'success')
+                ini_step = total_steps
             else:
                 helpers.restore(sampler.snapshot, reference_snapshot)
                 xi, _ = cv(helpers.query(sampler.snapshot))
                 print("Restoring basing configuration since system left basin with cv value:\n")
                 print(xi)
+                if write_traj:
+                    write_trajectory_info('Basin', ini_step, total_steps, xi, 'fail')
+                ini_step = total_steps
         else:
             if np.all(xi > win_A):
                 snap = copy(sampler.snapshot)
                 basin_snapshots.append(snap)
                 print("Storing basing configuration with cv value:\n")
                 print(xi)
+                if write_traj:
+                    write_trajectory_info('Basin', ini_step, total_steps, xi, 'success')
+                ini_step = total_steps
             else:
                 helpers.restore(sampler.snapshot, reference_snapshot)
                 xi, _ = cv(helpers.query(sampler.snapshot))
                 print("Restoring basing configuration since system left basin with cv value:\n")
                 print(xi)
+                if write_traj:
+                    write_trajectory_info('Basin', ini_step, total_steps, xi, 'fail')
+                ini_step = total_steps
 
     print(f"Finish sampling basin with {max_num_snapshots} snapshots\n")
-    if write_traj:
-        write_trajectory_info(0, 'Basin', 1, total_steps, 'initial sampling')
+    
     return basin_snapshots, total_steps
 
 
@@ -391,7 +403,7 @@ def initial_flow(Num_window0, timestep, freq, grid, initial_snapshots, run, samp
                         snap = copy(sampler.snapshot)
                         window0_snaps.append(snap)
                     if write_traj:
-                        write_trajectory_info(i + 1, 'initial_flow', initial_step, steps_count, 'success')
+                        write_trajectory_info('initial_flow', initial_step, steps_count, xi, 'success')
                     initial_step = steps_count
 
                     break
@@ -404,7 +416,7 @@ def initial_flow(Num_window0, timestep, freq, grid, initial_snapshots, run, samp
                         snap = copy(sampler.snapshot)
                         window0_snaps.append(snap)
                     if write_traj:
-                        write_trajectory_info(i + 1, 'initial_flow', initial_step, steps_count, 'success')
+                        write_trajectory_info('initial_flow', initial_step, steps_count, xi, 'success')
                     initial_step = steps_count
 
                     break
@@ -443,7 +455,7 @@ def running_window(grid, step, freq, old_snapshots, run, sampler, helpers, cv, i
                 if np.all(xi < win_A):
                     running = False
                     if write_traj:
-                        write_trajectory_info(i + 1, stage, initial_step, steps_count, 'fail')
+                        write_trajectory_info(stage, initial_step, steps_count, xi, 'fail')
                     initial_step = steps_count
                 elif np.all(xi >= win_value):
                     snap = copy(sampler.snapshot)
@@ -453,13 +465,13 @@ def running_window(grid, step, freq, old_snapshots, run, sampler, helpers, cv, i
                     if not has_conf_stored:
                         has_conf_stored = True
                     if write_traj:
-                        write_trajectory_info(i + 1, stage, initial_step, steps_count, 'success')
+                        write_trajectory_info(stage, initial_step, steps_count, xi, 'success')
                     initial_step = steps_count
             else:
                 if np.all(xi > win_A):
                     running = False
                     if write_traj:
-                        write_trajectory_info(i + 1, stage, initial_step, steps_count, 'fail')
+                        write_trajectory_info(stage, initial_step, steps_count, xi, 'fail')
                     initial_step = steps_count
                 elif np.all(xi <= win_value):
                     snap = copy(sampler.snapshot)
@@ -469,7 +481,7 @@ def running_window(grid, step, freq, old_snapshots, run, sampler, helpers, cv, i
                     if not has_conf_stored:
                         has_conf_stored = True
                     if write_traj:
-                        write_trajectory_info(i + 1, stage, initial_step, steps_count, 'success')
+                        write_trajectory_info(stage, initial_step, steps_count, xi, 'success')
                     initial_step = steps_count
 
     if success == 0:
